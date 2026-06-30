@@ -17,10 +17,52 @@ import uvicorn
 mcp = FastMCP("markitdown")
 
 
+def _get_llm_config():
+    """Build llm_client and llm_model from environment variables.
+
+    Supported env vars:
+      LLM_BASE_URL  — OpenAI-compatible endpoint (e.g. http://localhost:11434/v1 for Ollama)
+      LLM_API_KEY   — API key (defaults to "ollama" for local Ollama)
+      LLM_MODEL     — Model name (e.g. glm-ocr:latest)
+      LLM_PROMPT    — Custom OCR/extraction prompt (optional)
+      LLM_TIMEOUT   — Request timeout in seconds (default: 300)
+
+    Returns (llm_client, llm_model, llm_prompt) or (None, None, None).
+    """
+    base_url = os.getenv("LLM_BASE_URL")
+    model = os.getenv("LLM_MODEL")
+    if not base_url or not model:
+        return None, None, None
+
+    api_key = os.getenv("LLM_API_KEY", "ollama")
+    prompt = os.getenv("LLM_PROMPT")
+    timeout = int(os.getenv("LLM_TIMEOUT", "300"))
+
+    try:
+        from openai import OpenAI
+        import httpx
+
+        # Use trust_env=False to bypass system proxies that break localhost
+        # connections (common on Windows with corporate proxy settings).
+        # Local LLM servers (Ollama, LM Studio, etc.) don't need a proxy.
+        http_client = httpx.Client(timeout=timeout, trust_env=False)
+        client = OpenAI(base_url=base_url, api_key=api_key, http_client=http_client)
+        return client, model, prompt
+    except ImportError:
+        return None, None, None
+
+
 @mcp.tool()
 async def convert_to_markdown(uri: str) -> str:
     """Convert a resource described by an http:, https:, file: or data: URI to markdown"""
-    return MarkItDown(enable_plugins=check_plugins_enabled()).convert_uri(uri).markdown
+    llm_client, llm_model, llm_prompt = _get_llm_config()
+    kwargs = {"enable_plugins": check_plugins_enabled()}
+    if llm_client is not None:
+        kwargs["llm_client"] = llm_client
+        kwargs["llm_model"] = llm_model
+        if llm_prompt:
+            kwargs["llm_prompt"] = llm_prompt
+    return MarkItDown(**kwargs).convert_uri(uri).markdown
 
 
 def check_plugins_enabled() -> bool:
